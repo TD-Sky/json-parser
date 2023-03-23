@@ -4,6 +4,7 @@ pub use nom::Err;
 mod ast;
 pub use self::ast::Value;
 
+mod log;
 mod parser;
 
 pub fn parse(data: &str) -> Result<Value, Err<Error<&str>>> {

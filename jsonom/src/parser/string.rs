@@ -8,15 +8,15 @@
 //! - An escape followed by whitespace consumes all whitespace between the
 //!   escape and the next non-whitespace character
 
+use crate::log;
 use nom::branch::alt;
 use nom::bytes::streaming::{is_not, take_while_m_n};
 use nom::character::streaming::{char, multispace1};
 use nom::combinator::{map, map_opt, map_res, value, verify};
-use nom::error::{context, FromExternalError, ParseError};
+use nom::error::context;
 use nom::multi::fold_many0;
 use nom::sequence::{delimited, preceded};
 use nom::IResult;
-use std::num::ParseIntError;
 
 /// A string fragment contains a fragment of a string being parsed:
 ///
@@ -30,37 +30,23 @@ enum StringFragment<'a> {
     EscapedWS,
 }
 
-/// Parse a string. Use a loop of parse_fragment and push all of the fragments
-/// into an output string.
+/// Parse a string.
 pub(super) fn string(input: &str) -> IResult<&str, String> {
-    let build_string = fold_many0(
-        // fold会施用此解析器多轮（成功一次为一轮）
-        fragment,
-        // Our init value, an empty string
-        String::new,
-        // Our folding function. For each fragment, append the fragment to the
-        // string.
-        |mut string, fragment| {
-            match fragment {
-                StringFragment::Literal(s) => string.push_str(s),
-                StringFragment::EscapedChar(c) => string.push(c),
-                StringFragment::EscapedWS => {}
-            }
-            string
-        },
-    );
+    let build_string = fold_many0(fragment, String::new, |mut string, fragment| {
+        match fragment {
+            StringFragment::Literal(s) => string.push_str(s),
+            StringFragment::EscapedChar(c) => string.push(c),
+            StringFragment::EscapedWS => {}
+        }
+        string
+    });
 
-    // If `build_string` could accept a raw " character,
-    // the closing delimiter " would never match.
     let surround = delimited(char('"'), build_string, char('"'));
 
     context("string", surround)(input)
 }
 
-fn fragment<'a, E>(input: &'a str) -> IResult<&'a str, StringFragment<'a>, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
+fn fragment(input: &str) -> IResult<&str, StringFragment<'_>> {
     alt((
         map(literal, StringFragment::Literal),
         map(escaped_char, StringFragment::EscapedChar),
@@ -69,20 +55,19 @@ where
 }
 
 /// Parse a non-empty block of text that doesn't include \ or "
-fn literal<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, &'a str, E> {
+fn literal(input: &str) -> IResult<&str, &str> {
     let not_quote_slash = is_not(r#""\"#);
 
     // 若输入满足`F`，则用`G`验证，通过则返回输入，否则返回验证错误；
     // 若输入不满足`F`，则返回`F`的错误。
-    verify(not_quote_slash, |s: &str| !s.is_empty())(input)
+    let result = verify(not_quote_slash, |s: &str| !s.is_empty())(input);
+    log::string_debug("literal", &result);
+    result
 }
 
 /// Parse an escaped character: \n, \t, \r, \u{00AC}, etc.
-fn escaped_char<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
-    preceded(
+fn escaped_char(input: &str) -> IResult<&str, char> {
+    let result = preceded(
         char('\\'),
         alt((
             unicode,
@@ -95,15 +80,14 @@ where
             value('/', char('/')),
             value('"', char('"')),
         )),
-    )(input)
+    )(input);
+    log::string_debug("escaped_char", &result);
+    result
 }
 
 /// Parse a unicode sequence, of the form u{XXXX},
 /// where XXXX is 1 to 6 hexadecimal numerals.
-fn unicode<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
+fn unicode(input: &str) -> IResult<&str, char> {
     let hex = take_while_m_n(1, 6, |c: char| c.is_ascii_hexdigit());
 
     let delimited_hex = preceded(char('u'), delimited(char('{'), hex, char('}')));
@@ -117,8 +101,10 @@ where
 
 /// Parse a backslash, followed by any amount of whitespace.
 /// This is used to discard any escaped whitespace.
-fn escaped_whitespace<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, &'a str, E> {
-    preceded(char('\\'), multispace1)(input)
+fn escaped_whitespace(input: &str) -> IResult<&str, &str> {
+    let result = preceded(char('\\'), multispace1)(input);
+    log::string_debug("escaped_whitespace", &result);
+    result
 }
 
 #[cfg(test)]
